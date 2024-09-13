@@ -1,0 +1,144 @@
+
+--1. Выведите название самолетов, которые имеют менее 50 посадочных мест?
+
+
+select distinct  a.model
+from aircrafts a 
+join seats s on a.aircraft_code=s.aircraft_code 
+group by a.aircraft_code
+having  count(s.seat_no) < 50
+
+
+--2. Выведите процентное изменение ежемесячной суммы бронирования билетов, округленной до сотых.
+
+
+select  date_trunc('month', book_date)::date m1, 
+sum(total_amount),
+lag (sum(total_amount), 1) over w1, 
+round ((sum(total_amount))/(lag (sum(total_amount), 1) over w1)*100, 2)  
+from bookings
+group by m1
+window w1 as (order by date_trunc('month', book_date)::date asc)              
+
+
+
+--3. Выведите названия самолетов не имеющих бизнес - класс. Решение должно быть через функцию array_agg.
+select x.model
+from
+(select distinct  a.model, array_agg(distinct s.fare_conditions) AGG  
+from aircrafts a 
+join seats s on a.aircraft_code=s.aircraft_code
+group by a.aircraft_code) x
+where 'Business' != all (AGG)
+
+
+
+--4. Вывести накопительный итог количества мест в самолетах по каждому аэропорту на каждый день, учитывая только те самолеты,
+-- которые летали пустыми и только те дни, где из одного аэропорта таких самолетов вылетало более одного.
+-- В результате должны быть код аэропорта, дата, количество пустых мест в самолете и накопительный итог.
+
+
+
+with cte as(
+select  aircraft_code, count(seat_no) seats
+from seats
+group by aircraft_code
+)
+select a1.f1, a1.f2, a1.f3, a1.s1
+from 
+(select 
+f.departure_airport f1, f.actual_departure::date f2,  cte.seats f3,
+count(f.departure_airport) over (partition by f.actual_departure::date, f.departure_airport order by f.departure_airport) r1,
+sum (cte.seats) over (partition by f.departure_airport, f.actual_departure::date order by  f.flight_id) s1
+from flights f
+full outer join boarding_passes bp  on f.flight_id = bp.flight_id
+join cte on cte.aircraft_code = f.aircraft_code
+where status = 'Arrived'
+group by f.flight_id, cte.seats
+having count (boarding_no) = 0 ) a1
+where r1 > 1 
+
+
+--5. Найдите процентное соотношение перелетов по маршрутам от общего количества перелетов.
+-- Выведите в результат названия аэропортов и процентное отношение.
+--Решение должно быть через оконную функцию.
+    
+
+select  departure_airport_name , arrival_airport_name, count (flight_no)*100/sum(count (flight_no)) over() diff
+from  flights_v f
+group by departure_airport_name , arrival_airport_name 
+          
+
+             
+--6. Выведите количество пассажиров по каждому коду сотового оператора, если учесть, что код оператора - это три символа после +7
+        
+select substring (contact_data ->>'phone' from 3 for 3) code,
+count (passenger_id) count_passenger
+from tickets
+group by code      
+       
+--7. Классифицируйте финансовые обороты (сумма стоимости перелетов) по маршрутам:
+ --До 50 млн - low
+-- От 50 млн включительно до 150 млн - middle
+ --От 150 млн включительно - high
+ --Выведите в результат количество маршрутов в каждом полученном классе
+
+
+select clase, count (clase)
+from
+(select flight_no , sum(amount),
+case  when sum(amount) < 50000000 then 'low'
+	   when sum(amount) >= 50000000 and  sum(amount) < 150000000 then 'middle'
+	  when sum(amount) >= 150000000 then 'high'
+end clase
+from ticket_flights tf  
+join flights f on tf.flight_id =f.flight_id
+group by flight_no) ggg
+group by clase
+
+
+
+--8. Вычислите медиану стоимости перелетов, медиану размера бронирования и отношение медианы бронирования к медиане стоимости перелетов, 
+--округленной до сотых
+
+
+with cte_bookigns as(
+select percentile_cont(0.5) within group (order by total_amount) x
+from bookings b
+),
+cte_fly as (
+select percentile_cont(0.5) within group (order by amount) y
+from  ticket_flights tf)
+select *,round ((x/y)::numeric, 2) diff_medB_medTF
+from cte_fly, cte_bookigns
+
+
+
+--9. Найдите значение минимальной стоимости полета 1 км для пассажиров.
+-- То есть нужно найти расстояние между аэропортами и с учетом стоимости перелетов получить искомый результат
+ -- Для поиска расстояния между двумя точками на поверхности Земли используется модуль earthdistance.
+ -- Для работы модуля earthdistance необходимо предварительно установить модуль cube.
+ -- Установка модулей происходит через команду: create extension название_модуля.
+
+create extension cube
+
+
+create extension earthdistance
+
+
+with cte_TF as(
+select tf.flight_id, sum (amount) s
+from ticket_flights tf 
+group by  tf.flight_id),
+cte_range as (
+select f.flight_id, departure_airport,a.latitude, a.longitude, arrival_airport, s.latitude, s.longitude,  status,
+earth_distance (ll_to_earth(a.latitude, a.longitude ), ll_to_earth(s.latitude, s.longitude ))/1000 cr
+from flights f
+join airports a on a.airport_code = f.departure_airport
+join airports s on s.airport_code = f.arrival_airport
+)
+select round (min (ammount_per_1km)::numeric , 2) min_ammount_per_1km
+from
+(select cte_TF.s, cte_range.cr, cte_TF.s/cte_range.cr  as ammount_per_1km 
+from cte_TF
+join cte_range on cte_TF.flight_id= cte_range.flight_id) query
